@@ -1,0 +1,23 @@
+[package]
+name = "cmdrerun"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+directories = "6.0.0"
+# https://github.com/emilk/egui/blob/main/crates/eframe/CHANGELOG.md
+eframe = { version = "0.36.1", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+egui = "0.36.1"
+egui_extras = "0.36.1"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+similar = "3.2.0"
+uuid = { version = "1.26.0", features = ["v4", "v7", "serde"] }
+
+[profile.release]
+opt-level = 2
+
+[dev-dependencies]
+egui_kittest = "0.36.1"
