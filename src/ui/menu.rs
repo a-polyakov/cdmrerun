@@ -37,14 +37,10 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
                             ui.close();
                         }
                     }
-                });
-                if ui.button(s.dlg_settings_title).clicked() {
-                    app.dialog = Some(Dialog::Preferences);
-                    ui.close();
-                }
-            });
+                 });
+             });
 
-            MenuButton::new(s.menu_help).ui(ui, |ui| {
+             MenuButton::new(s.menu_help).ui(ui, |ui| {
                 if ui.button(s.menu_about).clicked() {
                     app.dialog = Some(Dialog::About);
                     ui.close();

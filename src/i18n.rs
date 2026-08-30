@@ -173,8 +173,6 @@ pub struct Strings {
     pub dlg_import_copy: &'static str,
     pub dlg_import_link: &'static str,
     pub dlg_import_json: &'static str,
-    pub dlg_settings_title: &'static str,
-    pub dlg_settings_lang: &'static str,
     pub dlg_about_title: &'static str,
     pub about_text: &'static str,
     pub btn_ok: &'static str,
@@ -210,13 +208,13 @@ pub struct Strings {
 }
 
 pub const RU: Strings = Strings {
-    date_format: "%d.%m.%Y %H:%M:%S",
+    date_format: "%Y.%m.%d %H:%M:%S",
     unit_sec: "с",
     unit_min: "мин",
 
     menu_file: "Файл",
-    menu_import: "Импорт команды…",
-    menu_export: "Экспорт команды…",
+    menu_import: "Импорт команды",
+    menu_export: "Экспорт команды",
     menu_quit: "Выход",
     menu_settings: "Настройки",
     menu_language: "Язык",
@@ -228,15 +226,15 @@ pub const RU: Strings = Strings {
     tree_group: "Группа",
     tree_command: "Команда",
     tree_empty: "Пусто. Создайте группу или команду кнопкой выше.",
-    ctx_group_inside: "Новая группа внутри",
-    ctx_command_inside: "Новая команда внутри",
+    ctx_group_inside: "Добавить новую группу",
+    ctx_command_inside: "Добавить новую команду",
 
     act_run: "Запустить",
     act_rename: "Переименовать",
     act_move: "Перенести",
     act_delete: "Удалить",
-    act_export: "Экспорт…",
-    act_import: "Импорт…",
+    act_export: "Экспорт",
+    act_import: "Импорт",
 
     pick_command: "Выберите команду в дереве слева",
     folder_stats: "Вложенных групп: {} · команд: {}",
@@ -327,10 +325,8 @@ pub const RU: Strings = Strings {
     dlg_import_browse: "Выбрать…",
     dlg_import_mode: "Что делать со скриптом:",
     dlg_import_copy: "Копия — скрипт скопируется в хранилище",
-    dlg_import_link: "Связь — скрипт останется в файле, правки будут записываться туда же",
+    dlg_import_link: "Связь — скрипт останется в файле, правки будут записываться в него",
     dlg_import_json: "Файл распознан как экспорт команды: имя, комментарий и параметры импортируются целиком.",
-    dlg_settings_title: "Настройки",
-    dlg_settings_lang: "Язык интерфейса",
     dlg_about_title: "О программе",
     about_text: "cmdrerun — хранилище shell-скриптов с историей.\n\n\
 • Дерево слева: группы и команды, перенос и переименование через контекстное меню.\n\
@@ -494,8 +490,6 @@ pub const EN: Strings = Strings {
     dlg_import_copy: "Copy — the script is copied into the store",
     dlg_import_link: "Link — the script stays in the file, edits are written back to it",
     dlg_import_json: "Recognised as a command export: name, comment and parameters are imported as a whole.",
-    dlg_settings_title: "Settings",
-    dlg_settings_lang: "Interface language",
     dlg_about_title: "About",
     about_text: "cmdrerun — a store for shell scripts with history.\n\n\
 • Tree on the left: groups and commands; move and rename from the context menu.\n\

@@ -74,7 +74,6 @@ pub enum Dialog {
         link: bool,
         parent_id: Option<String>,
     },
-    Preferences,
     About,
 }
 

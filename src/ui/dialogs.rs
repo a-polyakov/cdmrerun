@@ -4,7 +4,7 @@ use egui::{Button, Key, RichText, TextEdit, Ui};
 
 use super::details::value_widget;
 use crate::app::{App, Dialog};
-use crate::i18n::{Lang, Strings, fill1};
+use crate::i18n::{Strings, fill1};
 use crate::model::{Parameter, Selection};
 
 #[derive(PartialEq, Eq)]
@@ -33,10 +33,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         Dialog::Delete { target, summary } => delete_dialog(app, ctx, target, summary),
         Dialog::Run { command_id, params } => run_dialog(app, ctx, command_id, params),
         Dialog::Unsaved { .. } => unsaved_dialog(ctx, s),
-        Dialog::Import { path, link, .. } => import_dialog(ctx, s, path, link),
-        Dialog::Preferences => preferences_dialog(app, ctx),
-        Dialog::About => about_dialog(ctx, s),
-    };
+         Dialog::Import { path, link, .. } => import_dialog(ctx, s, path, link),
+         Dialog::About => about_dialog(ctx, s),
+     };
 
     match (outcome, dialog) {
         (Outcome::Stay, dialog) => app.dialog = Some(dialog),
@@ -298,33 +297,6 @@ fn import_dialog(
 
         buttons(ui, s, s.btn_import, false, !path.trim().is_empty())
     })
-}
-
-fn preferences_dialog(app: &mut App, ctx: &egui::Context) -> Outcome {
-    let s = app.s();
-    let mut lang = app.lang;
-    let outcome = modal(ctx, "preferences", s.dlg_settings_title, 380.0, |ui| {
-        ui.label(RichText::new(s.dlg_settings_lang).strong());
-        ui.add_space(4.0);
-        for option in Lang::ALL {
-            ui.radio_value(&mut lang, option, option.label());
-        }
-        ui.add_space(6.0);
-        ui.separator();
-        let mut outcome = Outcome::Stay;
-        ui.horizontal(|ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(s.btn_close).clicked() {
-                    outcome = Outcome::Cancel;
-                }
-            });
-        });
-        outcome
-    });
-    if lang != app.lang {
-        app.set_lang(lang);
-    }
-    outcome
 }
 
 fn about_dialog(ctx: &egui::Context, s: &Strings) -> Outcome {
