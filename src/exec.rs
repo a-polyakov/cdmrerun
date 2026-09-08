@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
 
-use crate::model::{Command, ExecutionLog, ParamType, Parameter, new_id};
+use crate::model::{Command, ExecutionLog, ParamType, Parameter, new_id, push_output_line};
 
 pub const MASK: &str = "********";
 
 enum RunEvent {
-    Stdout(String),
-    Stderr(String),
+    /// Строка вывода; `true` — она пришла из stderr.
+    Line(String, bool),
     Finished(Option<i32>),
 }
 
@@ -78,8 +78,8 @@ pub struct ActiveRun {
     /// Скрипт с подставленными параметрами (пароли замаскированы).
     pub script: String,
     pub params: Vec<Parameter>,
-    pub stdout: String,
-    pub stderr: String,
+    /// Объединённый вывод обоих потоков в порядке появления строк.
+    pub output: String,
     pub exit_code: Option<i32>,
     pub start_time: DateTime<Local>,
     pub end_time: Option<DateTime<Local>>,
@@ -122,8 +122,7 @@ impl ActiveRun {
                     p
                 })
                 .collect(),
-            stdout: String::new(),
-            stderr: String::new(),
+            output: String::new(),
             exit_code: None,
             start_time: Local::now(),
             end_time: None,
@@ -142,14 +141,8 @@ impl ActiveRun {
         let mut changed = false;
         loop {
             match self.rx.try_recv() {
-                Ok(RunEvent::Stdout(line)) => {
-                    self.stdout.push_str(&line);
-                    self.stdout.push('\n');
-                    changed = true;
-                }
-                Ok(RunEvent::Stderr(line)) => {
-                    self.stderr.push_str(&line);
-                    self.stderr.push('\n');
+                Ok(RunEvent::Line(line, is_error)) => {
+                    push_output_line(&mut self.output, &line, is_error);
                     changed = true;
                 }
                 Ok(RunEvent::Finished(code)) => {
@@ -206,8 +199,7 @@ impl ActiveRun {
             id: new_id(),
             command_id: self.command_id.clone(),
             script: self.script.clone(),
-            stdout: self.stdout.clone(),
-            stderr: self.stderr.clone(),
+            output: self.output.clone(),
             exit_code: self.exit_code,
             start_time: self.start_time,
             end_time: self.end_time,
@@ -236,7 +228,10 @@ fn worker(
     let mut child = match builder.spawn() {
         Ok(child) => child,
         Err(err) => {
-            let _ = tx.send(RunEvent::Stderr(format!("не удалось запустить оболочку: {err}")));
+            let _ = tx.send(RunEvent::Line(
+                format!("не удалось запустить оболочку: {err}"),
+                true,
+            ));
             let _ = tx.send(RunEvent::Finished(None));
             return;
         }
@@ -249,8 +244,8 @@ fn worker(
     }
 
     let readers = [
-        stdout.map(|pipe| spawn_reader(pipe, tx.clone(), true)),
-        stderr.map(|pipe| spawn_reader(pipe, tx.clone(), false)),
+        stdout.map(|pipe| spawn_reader(pipe, tx.clone(), false)),
+        stderr.map(|pipe| spawn_reader(pipe, tx.clone(), true)),
     ];
     for reader in readers.into_iter().flatten() {
         let _ = reader.join();
@@ -276,23 +271,20 @@ fn worker(
     let _ = tx.send(RunEvent::Finished(code));
 }
 
+/// Оба потока пишут в один канал: порядок строк в объединённом выводе —
+/// это порядок, в котором они пришли от процесса.
 fn spawn_reader<R: Read + Send + 'static>(
     pipe: R,
     tx: Sender<RunEvent>,
-    is_stdout: bool,
+    is_error: bool,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         for line in BufReader::new(pipe).lines() {
-            let line = match line {
-                Ok(line) => line,
-                Err(err) => format!("<ошибка чтения вывода: {err}>"),
+            let (line, is_error) = match line {
+                Ok(line) => (line, is_error),
+                Err(err) => (format!("<ошибка чтения вывода: {err}>"), true),
             };
-            let event = if is_stdout {
-                RunEvent::Stdout(line)
-            } else {
-                RunEvent::Stderr(line)
-            };
-            if tx.send(event).is_err() {
+            if tx.send(RunEvent::Line(line, is_error)).is_err() {
                 break;
             }
         }
@@ -357,8 +349,7 @@ mod tests {
             id: new_id(),
             command_id: "c".to_owned(),
             script: String::new(),
-            stdout: String::new(),
-            stderr: String::new(),
+            output: String::new(),
             exit_code: Some(0),
             start_time: Local::now(),
             end_time: Some(Local::now() + chrono::Duration::seconds(secs)),

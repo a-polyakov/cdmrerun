@@ -29,8 +29,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             name_dialog(ctx, s, s.dlg_new_command, s.dlg_command_name, name)
         }
         Dialog::Rename { name, .. } => name_dialog(ctx, s, s.dlg_rename, s.dlg_new_name, name),
-        Dialog::Move { target, parent_id } => move_dialog(app, ctx, target, parent_id),
+        Dialog::Move {
+            target,
+            parent_id,
+            index,
+        } => move_dialog(app, ctx, target, parent_id.as_deref(), *index),
         Dialog::Delete { target, summary } => delete_dialog(app, ctx, target, summary),
+        Dialog::DeleteRun { when, .. } => delete_run_dialog(ctx, s, when),
         Dialog::Run { command_id, params } => run_dialog(app, ctx, command_id, params),
         Dialog::Unsaved { .. } => unsaved_dialog(ctx, s),
          Dialog::Import { path, link, .. } => import_dialog(ctx, s, path, link),
@@ -47,8 +52,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             app.create_command(parent_id, name);
         }
         (Outcome::Confirm, Dialog::Rename { target, name }) => app.rename(&target, name),
-        (Outcome::Confirm, Dialog::Move { target, parent_id }) => app.move_to(&target, parent_id),
+        (
+            Outcome::Confirm,
+            Dialog::Move {
+                target,
+                parent_id,
+                index,
+            },
+        ) => app.move_to(&target, parent_id, index),
         (Outcome::Confirm, Dialog::Delete { target, .. }) => app.delete(&target),
+        (Outcome::Confirm, Dialog::DeleteRun { log_id, .. }) => app.delete_log(&log_id),
         (Outcome::Confirm, Dialog::Run { command_id, params }) => {
             app.start_run(&command_id, params);
         }
@@ -152,40 +165,38 @@ fn name_dialog(
     })
 }
 
+/// Место назначения уже выбрано перетаскиванием — здесь только подтверждают его.
 fn move_dialog(
     app: &App,
     ctx: &egui::Context,
     target: &Selection,
-    parent_id: &mut Option<String>,
+    parent_id: Option<&str>,
+    index: usize,
 ) -> Outcome {
     let s = app.s();
     let title = fill1(s.dlg_move_title, app.display_name(target));
-    modal(ctx, "move_dialog", &title, 420.0, |ui| {
-        ui.label(s.dlg_move_hint);
-        egui::ScrollArea::vertical()
-            .max_height(280.0)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                if ui.selectable_label(parent_id.is_none(), s.dlg_root).clicked() {
-                    *parent_id = None;
-                }
-                let mut folders: Vec<_> = app.folders.iter().collect();
-                folders.sort_by_key(|folder| app.path_of(&Selection::Folder(folder.id.clone())));
-                for folder in folders {
-                    let selection = Selection::Folder(folder.id.clone());
-                    let allowed = app.can_move(target, Some(&folder.id)) && selection != *target;
-                    let selected = parent_id.as_deref() == Some(folder.id.as_str());
-                    let response = ui.add_enabled(
-                        allowed,
-                        Button::selectable(selected, app.path_of(&selection)),
-                    );
-                    if response.clicked() {
-                        *parent_id = Some(folder.id.clone());
-                    }
-                }
-            });
+    modal(ctx, "move_dialog", &title, 380.0, |ui| {
+        move_summary(app, ui, target, parent_id, index);
         buttons(ui, s, s.act_move, false, true)
     })
+}
+
+/// Что именно изменится: родителя показываем, только если он другой.
+fn move_summary(app: &App, ui: &mut Ui, target: &Selection, parent: Option<&str>, index: usize) {
+    let s = app.s();
+    let old_parent = app.parent_of(target);
+    if old_parent.as_deref() != parent {
+        ui.label(RichText::new(s.dlg_move_parent).strong());
+        ui.label(fill1(
+            s.dlg_move_was,
+            app.parent_name(old_parent.as_deref()),
+        ));
+        ui.label(fill1(s.dlg_move_now, app.parent_name(parent)));
+        ui.add_space(6.0);
+    }
+    ui.label(RichText::new(s.dlg_move_number).strong());
+    ui.label(fill1(s.dlg_move_was, app.position_of(target)));
+    ui.label(fill1(s.dlg_move_now, index + 1));
 }
 
 fn delete_dialog(app: &App, ctx: &egui::Context, target: &Selection, summary: &str) -> Outcome {
@@ -199,6 +210,18 @@ fn delete_dialog(app: &App, ctx: &egui::Context, target: &Selection, summary: &s
         ui.label(RichText::new(question).strong());
         ui.add_space(4.0);
         ui.label(summary);
+        ui.add_space(4.0);
+        ui.label(RichText::new(s.dlg_delete_warn).color(ui.visuals().warn_fg_color));
+        buttons(ui, s, s.act_delete, true, true)
+    })
+}
+
+fn delete_run_dialog(ctx: &egui::Context, s: &Strings, when: &str) -> Outcome {
+    let title = s.dlg_delete_run_title;
+    modal(ctx, "delete_run_dialog", title, 440.0, |ui| {
+        ui.label(RichText::new(fill1(s.dlg_delete_run_q, when)).strong());
+        ui.add_space(4.0);
+        ui.label(s.dlg_delete_run_info);
         ui.add_space(4.0);
         ui.label(RichText::new(s.dlg_delete_warn).color(ui.visuals().warn_fg_color));
         buttons(ui, s, s.act_delete, true, true)

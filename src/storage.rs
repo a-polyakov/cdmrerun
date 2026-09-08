@@ -173,6 +173,25 @@ impl Storage {
         Self::write_json(&self.runs_dir(&log.command_id).join(name), log)
     }
 
+    /// Удаляет одну запись истории запусков. Имя файла начинается с времени,
+    /// поэтому ищем его по идентификатору в хвосте.
+    pub fn delete_log(&self, command_id: &str, log_id: &str) -> Result<()> {
+        let dir = self.runs_dir(command_id);
+        let suffix = format!("__{log_id}.json");
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Ok(());
+        };
+        for path in entries.flatten().map(|entry| entry.path()) {
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(&suffix))
+            {
+                remove_if_exists(&path)?;
+            }
+        }
+        Ok(())
+    }
+
     // --- настройки и состояние интерфейса ---
 
     fn settings_path(&self) -> PathBuf {

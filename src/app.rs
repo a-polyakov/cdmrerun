@@ -8,7 +8,8 @@ use crate::diff;
 use crate::exec::{self, ActiveRun};
 use crate::i18n::{Lang, Strings, fill1, fill2};
 use crate::model::{
-    ChangeLog, Command, CommandExport, ExecutionLog, Folder, Parameter, Selection, Settings, new_id,
+    ChangeLog, Command, CommandExport, ExecutionLog, Folder, ParamType, Parameter, Selection,
+    Settings, new_id,
 };
 use crate::storage::{self, Storage};
 use crate::ui;
@@ -57,10 +58,16 @@ pub enum Dialog {
     Move {
         target: Selection,
         parent_id: Option<String>,
+        /// Куда вставить среди соседей (номер минус один).
+        index: usize,
     },
     Delete {
         target: Selection,
         summary: String,
+    },
+    DeleteRun {
+        log_id: String,
+        when: String,
     },
     Run {
         command_id: String,
@@ -80,6 +87,26 @@ pub enum Dialog {
 pub struct Status {
     pub text: String,
     pub is_error: bool,
+}
+
+/// Куда именно бросили узел, который тащили по дереву.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropPos {
+    /// Перед строкой, на одном с ней уровне.
+    Before,
+    /// После строки, на одном с ней уровне.
+    After,
+    /// Внутрь группы, в конец её содержимого.
+    Inside,
+}
+
+/// Отдельное окно с выводом команды.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputWindow {
+    pub command_id: String,
+    /// Запись истории; `None` — вывод идущего сейчас запуска.
+    pub log_id: Option<String>,
+    pub title: String,
 }
 
 /// Строка дерева, подготовленная к отрисовке.
@@ -107,6 +134,10 @@ pub struct App {
     pub dialog: Option<Dialog>,
     pub status: Option<Status>,
     pub lang: Lang,
+    /// Узел, который сейчас тащат мышью по дереву.
+    pub drag: Option<Selection>,
+    /// Открытое окно с выводом команды.
+    pub output_window: Option<OutputWindow>,
 }
 
 impl App {
@@ -128,6 +159,8 @@ impl App {
             dialog: None,
             status: None,
             lang: Lang::default(),
+            drag: None,
+            output_window: None,
             storage,
         };
         if let Err(err) = app.storage.init() {
@@ -299,41 +332,125 @@ impl App {
         }
     }
 
-    fn collect_rows(&self, parent: Option<&str>, depth: usize, rows: &mut Vec<TreeRow>) {
-        let mut folders: Vec<&Folder> = self
-            .folders
-            .iter()
-            .filter(|f| self.belongs_to(f.parent_id.as_deref(), parent))
-            .collect();
-        folders.sort_by_key(|f| f.name.to_lowercase());
-        for folder in folders {
-            rows.push(TreeRow {
-                selection: Selection::Folder(folder.id.clone()),
-                name: folder.name.clone(),
-                depth,
-                is_folder: true,
-                has_children: self.has_children(&folder.id),
-            });
-            if self.expanded.contains(&folder.id) {
-                self.collect_rows(Some(&folder.id), depth + 1, rows);
+    /// Соседи по уровню в порядке показа.
+    ///
+    /// Сначала расставленный руками номер, потом группы перед командами и имя:
+    /// у хранилища без номеров (все нули) порядок остаётся прежним — группы
+    /// сверху, всё по алфавиту, — а после первого переноса командует номер.
+    pub fn siblings(&self, parent: Option<&str>) -> Vec<Selection> {
+        let mut items: Vec<(i32, bool, String, Selection)> = Vec::new();
+        for folder in &self.folders {
+            if self.belongs_to(folder.parent_id.as_deref(), parent) {
+                items.push((
+                    folder.order,
+                    false,
+                    folder.name.to_lowercase(),
+                    Selection::Folder(folder.id.clone()),
+                ));
             }
         }
-
-        let mut commands: Vec<&Command> = self
-            .commands
-            .iter()
-            .filter(|c| self.belongs_to(c.parent_id.as_deref(), parent))
-            .collect();
-        commands.sort_by_key(|c| c.name.to_lowercase());
-        for command in commands {
-            rows.push(TreeRow {
-                selection: Selection::Command(command.id.clone()),
-                name: command.name.clone(),
-                depth,
-                is_folder: false,
-                has_children: false,
-            });
+        for command in &self.commands {
+            if self.belongs_to(command.parent_id.as_deref(), parent) {
+                items.push((
+                    command.order,
+                    true,
+                    command.name.to_lowercase(),
+                    Selection::Command(command.id.clone()),
+                ));
+            }
         }
+        items.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
+        items.into_iter().map(|(_, _, _, item)| item).collect()
+    }
+
+    pub fn parent_of(&self, selection: &Selection) -> Option<String> {
+        match selection {
+            Selection::Folder(id) => self.folder(id).and_then(|f| f.parent_id.clone()),
+            Selection::Command(id) => self.command(id).and_then(|c| c.parent_id.clone()),
+        }
+    }
+
+    /// Номер узла среди соседей, начиная с единицы — то, что видно в дереве.
+    pub fn position_of(&self, selection: &Selection) -> usize {
+        self.index_of(selection) + 1
+    }
+
+    /// Место узла среди соседей, считая с нуля.
+    pub fn index_of(&self, selection: &Selection) -> usize {
+        let parent = self.parent_of(selection);
+        self.siblings(parent.as_deref())
+            .iter()
+            .position(|item| item == selection)
+            .unwrap_or(0)
+    }
+
+    /// Название родителя для показа: у корня своего имени нет.
+    pub fn parent_name(&self, parent: Option<&str>) -> String {
+        match parent {
+            None => self.s().dlg_root.to_owned(),
+            Some(id) => self.path_of(&Selection::Folder(id.to_owned())),
+        }
+    }
+
+    fn collect_rows(&self, parent: Option<&str>, depth: usize, rows: &mut Vec<TreeRow>) {
+        for selection in self.siblings(parent) {
+            let is_folder = matches!(selection, Selection::Folder(_));
+            let id = selection.id().to_owned();
+            rows.push(TreeRow {
+                name: self.display_name(&selection),
+                selection,
+                depth,
+                is_folder,
+                has_children: is_folder && self.has_children(&id),
+            });
+            if is_folder && self.expanded.contains(&id) {
+                self.collect_rows(Some(&id), depth + 1, rows);
+            }
+        }
+    }
+
+    // ---------- номера в дереве ----------
+
+    /// Расставляет соседям номера подряд и сохраняет то, что изменилось.
+    fn renumber(&mut self, order: &[Selection]) {
+        for (index, selection) in order.iter().enumerate() {
+            let index = index as i32;
+            match selection {
+                Selection::Folder(id) => {
+                    let Some(folder) = self.folders.iter_mut().find(|f| f.id == *id) else {
+                        continue;
+                    };
+                    if folder.order == index {
+                        continue;
+                    }
+                    folder.order = index;
+                    let folder = folder.clone();
+                    let result = self.storage.save_folder(&folder);
+                    self.report(result);
+                }
+                Selection::Command(id) => {
+                    let Some(command) = self.commands.iter_mut().find(|c| c.id == *id) else {
+                        continue;
+                    };
+                    if command.order == index {
+                        continue;
+                    }
+                    command.order = index;
+                    let command = command.clone();
+                    let result = self.storage.save_command(&command);
+                    self.report(result);
+                }
+            }
+        }
+    }
+
+    /// Номер для нового узла: он встаёт в конец группы.
+    fn next_order(&mut self, parent: Option<&str>) -> i32 {
+        // Сначала нормализуем номера соседей, иначе новый узел с номером `len`
+        // окажется среди тех, у кого номера ещё нулевые.
+        let order = self.siblings(parent);
+        self.renumber(&order);
+        order.len() as i32
     }
 
     // ---------- выделение и редактор ----------
@@ -360,6 +477,7 @@ impl App {
                 self.changes.clear();
                 self.selected_log = None;
                 self.selected_change = None;
+                self.output_window = None;
             }
         }
     }
@@ -368,6 +486,13 @@ impl App {
         let Some(command) = self.command(id).cloned() else {
             return;
         };
+        if self
+            .output_window
+            .as_ref()
+            .is_some_and(|window| window.command_id != id)
+        {
+            self.output_window = None;
+        }
         // У связанной команды источник истины — файл на диске.
         let mut script = command.script;
         if let Some(path) = &command.script_path {
@@ -470,7 +595,8 @@ impl App {
     // ---------- операции над деревом ----------
 
     pub fn create_folder(&mut self, parent_id: Option<String>, name: String) {
-        let folder = Folder::new(name.trim(), parent_id.clone());
+        let mut folder = Folder::new(name.trim(), parent_id.clone());
+        folder.order = self.next_order(parent_id.as_deref());
         let result = self.storage.save_folder(&folder);
         self.report(result);
         if let Some(parent) = parent_id {
@@ -483,7 +609,8 @@ impl App {
     }
 
     pub fn create_command(&mut self, parent_id: Option<String>, name: String) {
-        let command = Command::new(name.trim(), parent_id.clone());
+        let mut command = Command::new(name.trim(), parent_id.clone());
+        command.order = self.next_order(parent_id.as_deref());
         let result = self.storage.save_command(&command);
         self.report(result);
         if let Some(parent) = parent_id {
@@ -549,11 +676,22 @@ impl App {
         }
     }
 
-    pub fn move_to(&mut self, target: &Selection, new_parent: Option<String>) {
+    /// Переносит узел в группу `new_parent` на место `index` (нумерация с нуля).
+    pub fn move_to(&mut self, target: &Selection, new_parent: Option<String>, index: usize) {
         if !self.can_move(target, new_parent.as_deref()) {
             self.set_error(self.s().st_cant_move_into_self);
             return;
         }
+        let old_parent = self.parent_of(target);
+
+        // Порядок соседей без переносимого узла — в него и вставляем.
+        let mut order: Vec<Selection> = self
+            .siblings(new_parent.as_deref())
+            .into_iter()
+            .filter(|item| item != target)
+            .collect();
+        order.insert(index.min(order.len()), target.clone());
+
         match target {
             Selection::Folder(id) => {
                 let Some(folder) = self.folders.iter_mut().find(|f| f.id == *id) else {
@@ -574,10 +712,73 @@ impl App {
                 self.report(result);
             }
         }
+
+        self.renumber(&order);
+        if old_parent != new_parent {
+            // В покинутой группе номера тоже сдвигаются.
+            let left_behind = self.siblings(old_parent.as_deref());
+            self.renumber(&left_behind);
+        }
+
         if let Some(parent) = new_parent {
             self.expanded.insert(parent);
+            self.persist_ui();
         }
         self.set_status(fill1(self.s().st_moved, self.display_name(target)));
+    }
+
+    /// Открывает подтверждение переноса: сюда приходят и контекстное меню, и перетаскивание.
+    pub fn request_move(&mut self, target: &Selection, parent_id: Option<String>, index: usize) {
+        self.dialog = Some(Dialog::Move {
+            target: target.clone(),
+            parent_id,
+            index,
+        });
+    }
+
+    /// Куда встанет узел, если бросить его на строку `target`.
+    /// `None` — так бросать нельзя (например, группу внутрь самой себя).
+    pub fn drop_place(
+        &self,
+        dragged: &Selection,
+        target: &Selection,
+        pos: DropPos,
+    ) -> Option<(Option<String>, usize)> {
+        if dragged == target {
+            return None;
+        }
+        let (parent, index) = match pos {
+            DropPos::Inside => {
+                let Selection::Folder(id) = target else {
+                    return None;
+                };
+                let count = self
+                    .siblings(Some(id))
+                    .iter()
+                    .filter(|item| *item != dragged)
+                    .count();
+                (Some(id.clone()), count)
+            }
+            DropPos::Before | DropPos::After => {
+                let parent = self.parent_of(target);
+                let neighbours: Vec<Selection> = self
+                    .siblings(parent.as_deref())
+                    .into_iter()
+                    .filter(|item| item != dragged)
+                    .collect();
+                let index = neighbours.iter().position(|item| item == target)?;
+                (
+                    parent,
+                    if pos == DropPos::After {
+                        index + 1
+                    } else {
+                        index
+                    },
+                )
+            }
+        };
+        self.can_move(dragged, parent.as_deref())
+            .then_some((parent, index))
     }
 
     /// Текст подтверждения удаления: сколько всего пропадёт.
@@ -710,6 +911,114 @@ impl App {
         self.set_status(fill1(self.s().st_started, &command.name));
     }
 
+    /// Повторяет запуск из истории: значения параметров берём оттуда же.
+    ///
+    /// Пароли в историю не пишутся, поэтому для них подставляем значения
+    /// из самой команды — и форму запуска показываем, чтобы это было видно.
+    pub fn rerun_log(&mut self, log_id: &str) {
+        let Some(log) = self.logs.iter().find(|log| log.id == log_id).cloned() else {
+            return;
+        };
+        let Some(command) = self.command(&log.command_id).cloned() else {
+            return;
+        };
+        if self.is_running(&command.id) {
+            self.set_status(fill1(self.s().st_already_running, &command.name));
+            return;
+        }
+        let params: Vec<Parameter> = command
+            .params
+            .iter()
+            .map(|param| {
+                let mut param = param.clone();
+                if param.param_type != ParamType::Password
+                    && let Some(old) = log.params.iter().find(|old| old.name == param.name)
+                {
+                    param.value = old.value.clone();
+                }
+                param
+            })
+            .collect();
+        if params.is_empty() {
+            self.start_run(&command.id, params);
+        } else {
+            self.dialog = Some(Dialog::Run {
+                command_id: command.id,
+                params,
+            });
+        }
+    }
+
+    /// Убирает запись о запуске из истории вместе с её файлом.
+    pub fn delete_log(&mut self, log_id: &str) {
+        let Some(index) = self.logs.iter().position(|log| log.id == log_id) else {
+            return;
+        };
+        let log = self.logs.remove(index);
+        let result = self.storage.delete_log(&log.command_id, &log.id);
+        self.report(result);
+
+        self.selected_log = match self.selected_log {
+            Some(selected) if selected == index => index.checked_sub(1),
+            Some(selected) if selected > index => Some(selected - 1),
+            other => other,
+        };
+        if self
+            .output_window
+            .as_ref()
+            .is_some_and(|window| window.log_id.as_deref() == Some(log_id))
+        {
+            self.output_window = None;
+        }
+        self.set_status(self.s().st_run_deleted);
+    }
+
+    // ---------- отдельное окно с выводом ----------
+
+    /// Открывает окно с выводом: `None` — вывод идущего сейчас запуска.
+    pub fn open_output_window(&mut self, log_id: Option<String>) {
+        let Some(command_id) = self.editor.command_id.clone() else {
+            return;
+        };
+        let when = match &log_id {
+            Some(id) => self
+                .logs
+                .iter()
+                .find(|log| log.id == *id)
+                .map(|log| ui::fmt_time(self.lang, &log.start_time)),
+            None => self
+                .current_run()
+                .map(|run| ui::fmt_time(self.lang, &run.start_time)),
+        };
+        let name = self.display_name(&Selection::Command(command_id.clone()));
+        let title = match when {
+            Some(when) => format!("{name} · {when}"),
+            None => name,
+        };
+        self.output_window = Some(OutputWindow {
+            command_id,
+            log_id,
+            title,
+        });
+    }
+
+    /// Вывод, который показывает отдельное окно; `None` — показывать нечего.
+    pub fn window_output(&self) -> Option<&str> {
+        let window = self.output_window.as_ref()?;
+        match &window.log_id {
+            None => self
+                .runs
+                .iter()
+                .find(|run| run.command_id == window.command_id)
+                .map(|run| run.output.as_str()),
+            Some(id) => self
+                .logs
+                .iter()
+                .find(|log| log.id == *id)
+                .map(|log| log.output.as_str()),
+        }
+    }
+
     pub fn cancel_run(&mut self, command_id: &str) {
         if let Some(run) = self.run_for_mut(command_id) {
             run.cancel();
@@ -752,6 +1061,14 @@ impl App {
             };
 
             if self.editor.command_id.as_deref() == Some(log.command_id.as_str()) {
+                // Окно смотрело на живой запуск — переводим его на свежую запись,
+                // иначе после финиша там останется пустота.
+                if let Some(window) = &mut self.output_window
+                    && window.log_id.is_none()
+                    && window.command_id == log.command_id
+                {
+                    window.log_id = Some(log.id.clone());
+                }
                 self.logs.push(log);
                 self.selected_log = self.logs.len().checked_sub(1);
             }
@@ -819,6 +1136,7 @@ impl App {
 
         let export = parse_export(&file, &text);
         let linked = link && export.is_none();
+        let order = self.next_order(parent_id.as_deref());
         let command = Command {
             id: new_id(),
             name: export
@@ -832,6 +1150,7 @@ impl App {
                 .unwrap_or_default(),
             params: export.map(|e| e.params).unwrap_or_default(),
             parent_id: parent_id.clone(),
+            order,
             script_path: linked.then(|| path.to_owned()),
         };
 
@@ -926,6 +1245,7 @@ impl eframe::App for App {
         ui::status_bar(self, ui);
         ui::details::central_panel(self, ui);
         ui::dialogs::show(self, ui.ctx());
+        ui::output_window::show(self, ui.ctx());
     }
 }
 
@@ -986,6 +1306,8 @@ mod tests {
             dialog: None,
             status: None,
             lang: Lang::default(),
+            drag: None,
+            output_window: None,
         }
     }
 
@@ -1186,6 +1508,164 @@ mod tests {
         if let Some(run) = app.runs.first_mut() {
             run.cancel();
         }
+        std::fs::remove_dir_all(app.storage.root()).ok();
+    }
+
+    /// Имена узлов корня в том порядке, в каком они видны в дереве.
+    fn root_order(app: &App) -> Vec<String> {
+        app.siblings(None)
+            .iter()
+            .map(|item| app.display_name(item))
+            .collect()
+    }
+
+    #[test]
+    fn a_node_dropped_higher_up_takes_that_number() {
+        let mut app = app_with(
+            Vec::new(),
+            vec![
+                Command::new("А", None),
+                Command::new("Б", None),
+                Command::new("В", None),
+            ],
+        );
+        // Без номеров порядок алфавитный — как было до появления переносов.
+        assert_eq!(root_order(&app), ["А", "Б", "В"]);
+
+        let third = app.siblings(None)[2].clone();
+        assert_eq!(app.position_of(&third), 3);
+        app.move_to(&third, None, 0);
+
+        assert_eq!(root_order(&app), ["В", "А", "Б"]);
+        assert_eq!(app.position_of(&third), 1);
+        // Номера пережили перезапуск: они лежат в файлах команд.
+        let reloaded = app_with(Vec::new(), app.storage.load_commands());
+        assert_eq!(root_order(&reloaded), ["В", "А", "Б"]);
+
+        std::fs::remove_dir_all(app.storage.root()).ok();
+    }
+
+    #[test]
+    fn dropping_on_a_row_says_where_the_node_lands() {
+        let folder = Folder::new("Группа", None);
+        let folder_id = folder.id.clone();
+        let inside = Command::new("Внутренняя", Some(folder_id.clone()));
+        let app = app_with(
+            vec![folder],
+            vec![
+                inside,
+                Command::new("Первая", None),
+                Command::new("Вторая", None),
+            ],
+        );
+        // В корне: группа, затем команды по алфавиту.
+        assert_eq!(root_order(&app), ["Группа", "Вторая", "Первая"]);
+
+        let group = Selection::Folder(folder_id.clone());
+        let first = app.siblings(None)[2].clone();
+        let second = app.siblings(None)[1].clone();
+
+        // Перед первой строкой корня — нулевое место.
+        assert_eq!(
+            app.drop_place(&first, &group, DropPos::Before),
+            Some((None, 0))
+        );
+        // После «Второй» — сразу за ней, номер считается уже без переносимого узла.
+        assert_eq!(
+            app.drop_place(&first, &second, DropPos::After),
+            Some((None, 2))
+        );
+        // В середину группы — внутрь, в конец её содержимого.
+        assert_eq!(
+            app.drop_place(&first, &group, DropPos::Inside),
+            Some((Some(folder_id), 1))
+        );
+        // Сам на себя и группа внутрь себя — так нельзя.
+        assert_eq!(app.drop_place(&group, &group, DropPos::Inside), None);
+        assert_eq!(app.drop_place(&first, &first, DropPos::Before), None);
+
+        std::fs::remove_dir_all(app.storage.root()).ok();
+    }
+
+    #[test]
+    fn a_group_dropped_into_its_own_child_is_refused() {
+        let (app, root_id, child_id) = sample();
+        let root = Selection::Folder(root_id);
+        let child = Selection::Folder(child_id);
+        assert_eq!(app.drop_place(&root, &child, DropPos::Inside), None);
+        // А вот ребёнка в корень — пожалуйста.
+        assert!(app.drop_place(&child, &root, DropPos::Before).is_some());
+
+        std::fs::remove_dir_all(app.storage.root()).ok();
+    }
+
+    #[test]
+    fn a_deleted_run_disappears_from_the_history_and_from_disk() {
+        let command = Command::new("Тест", None);
+        let id = command.id.clone();
+        let mut app = app_with(Vec::new(), vec![command]);
+        app.select(Selection::Command(id.clone()));
+
+        for _ in 0..2 {
+            let log = ExecutionLog {
+                id: new_id(),
+                command_id: id.clone(),
+                script: String::new(),
+                output: String::new(),
+                exit_code: Some(0),
+                start_time: chrono::Local::now(),
+                end_time: Some(chrono::Local::now()),
+                params: Vec::new(),
+            };
+            app.storage.save_log(&log).expect("save");
+            app.logs.push(log);
+        }
+        app.selected_log = Some(1);
+
+        let first = app.logs[0].id.clone();
+        app.delete_log(&first);
+
+        assert_eq!(app.logs.len(), 1);
+        assert_eq!(app.storage.load_logs(&id).len(), 1);
+        // Выделение съезжает вместе со списком, а не показывает чужой запуск.
+        assert_eq!(app.selected_log, Some(0));
+
+        std::fs::remove_dir_all(app.storage.root()).ok();
+    }
+
+    #[test]
+    fn a_repeated_run_starts_with_the_values_of_the_old_one() {
+        let mut command = Command::new("Сборка", None);
+        command.params = vec![Parameter::new("BRANCH"), Parameter::new("ENV")];
+        let id = command.id.clone();
+        let mut app = app_with(Vec::new(), vec![command]);
+        app.select(Selection::Command(id.clone()));
+
+        let mut used = Parameter::new("BRANCH");
+        used.value = "release".to_owned();
+        app.logs.push(ExecutionLog {
+            id: new_id(),
+            command_id: id.clone(),
+            script: String::new(),
+            output: String::new(),
+            exit_code: Some(0),
+            start_time: chrono::Local::now(),
+            end_time: Some(chrono::Local::now()),
+            params: vec![used],
+        });
+
+        let log_id = app.logs[0].id.clone();
+        app.rerun_log(&log_id);
+
+        // Форма запуска открыта и заполнена значениями того запуска.
+        match app.dialog {
+            Some(Dialog::Run { ref params, .. }) => {
+                assert_eq!(params[0].value, "release");
+                assert_eq!(params[1].value, "");
+            }
+            _ => panic!("ожидалась форма запуска"),
+        }
+
         std::fs::remove_dir_all(app.storage.root()).ok();
     }
 

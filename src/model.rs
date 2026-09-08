@@ -89,6 +89,9 @@ pub struct Command {
     pub params: Vec<Parameter>,
     /// Идентификатор родительской папки; `None` — корень дерева.
     pub parent_id: Option<String>,
+    /// Порядок среди соседей: он же «номер» узла в дереве.
+    #[serde(default)]
+    pub order: i32,
     /// Связь с файлом на диске: скрипт читается оттуда и туда же сохраняется.
     #[serde(default)]
     pub script_path: Option<String>,
@@ -103,6 +106,7 @@ impl Command {
             comment: String::new(),
             params: Vec::new(),
             parent_id,
+            order: 0,
             script_path: None,
         }
     }
@@ -132,6 +136,9 @@ pub struct Folder {
     pub id: String,
     pub name: String,
     pub parent_id: Option<String>,
+    /// Порядок среди соседей: он же «номер» узла в дереве.
+    #[serde(default)]
+    pub order: i32,
 }
 
 impl Folder {
@@ -140,8 +147,46 @@ impl Folder {
             id: new_id(),
             name: name.into(),
             parent_id,
+            order: 0,
         }
     }
+}
+
+/// Пометка строки stderr в объединённом выводе.
+///
+/// Вывод склеен в одну ленту в порядке появления строк — иначе непонятно,
+/// на каком шаге команда ругнулась. Чтобы это было видно и в файле истории,
+/// а не только в UI, строки ошибок помечены символом.
+pub const ERR_MARK: &str = "! ";
+/// Пометка обычной строки: тот же отступ, что и у ошибки, но без символа.
+pub const OUT_MARK: &str = "  ";
+
+/// Дописывает строку вывода, пометив ошибку символом.
+pub fn push_output_line(output: &mut String, line: &str, is_error: bool) {
+    output.push_str(if is_error { ERR_MARK } else { OUT_MARK });
+    output.push_str(line);
+    output.push('\n');
+}
+
+/// Разбирает объединённый вывод на строки; `true` — строка пришла из stderr.
+pub fn output_lines(output: &str) -> Vec<(bool, &str)> {
+    output
+        .lines()
+        .map(|line| match line.strip_prefix(ERR_MARK) {
+            Some(text) => (true, text),
+            None => (false, line.strip_prefix(OUT_MARK).unwrap_or(line)),
+        })
+        .collect()
+}
+
+/// Вывод без пометок — то, что уходит в буфер обмена.
+pub fn plain_output(output: &str) -> String {
+    let mut plain = String::with_capacity(output.len());
+    for (_, text) in output_lines(output) {
+        plain.push_str(text);
+        plain.push('\n');
+    }
+    plain
 }
 
 /// Запись истории запусков: что именно выполнялось и что получилось.
@@ -151,8 +196,10 @@ pub struct ExecutionLog {
     pub command_id: String,
     /// Скрипт с уже подставленными параметрами — та самая версия, что была запущена.
     pub script: String,
-    pub stdout: String,
-    pub stderr: String,
+    /// Объединённый вывод stdout и stderr в порядке появления;
+    /// строки stderr помечены [`ERR_MARK`].
+    #[serde(default)]
+    pub output: String,
     pub exit_code: Option<i32>,
     pub start_time: DateTime<Local>,
     pub end_time: Option<DateTime<Local>>,
@@ -228,4 +275,33 @@ pub struct Settings {
     /// Раскрытые группы.
     #[serde(default)]
     pub expanded: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_lines_are_marked_in_the_merged_output() {
+        let mut output = String::new();
+        push_output_line(&mut output, "собираю", false);
+        push_output_line(&mut output, "warning: нет файла", true);
+        push_output_line(&mut output, "готово", false);
+
+        // В файле истории строка ошибки помечена символом.
+        assert_eq!(output, "  собираю\n! warning: нет файла\n  готово\n");
+        assert_eq!(
+            output_lines(&output),
+            [
+                (false, "собираю"),
+                (true, "warning: нет файла"),
+                (false, "готово")
+            ]
+        );
+        // В буфер обмена уходит вывод без пометок.
+        assert_eq!(
+            plain_output(&output),
+            "собираю\nwarning: нет файла\nготово\n"
+        );
+    }
 }

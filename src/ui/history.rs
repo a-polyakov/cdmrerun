@@ -1,9 +1,12 @@
 //! Нижняя часть панели команды: история запусков и история изменений.
 
-use egui::{Color32, RichText, Ui};
+use egui::{Button, Color32, RichText, Ui};
 
-use super::{diff_legend, diff_view, fmt_duration, fmt_time, mono, output_block, run_progress};
-use crate::app::{App, BottomTab};
+use super::{
+    diff_legend, diff_view, fmt_duration, fmt_time, mono, output_block, output_header, output_view,
+    run_progress,
+};
+use crate::app::{App, BottomTab, Dialog};
 use crate::diff;
 use crate::i18n::fill1;
 use crate::model::ExecutionLog;
@@ -49,6 +52,15 @@ fn runs_tab(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// Строка списка запусков, подготовленная к отрисовке.
+struct RunRow {
+    index: usize,
+    log_id: String,
+    when: String,
+    label: String,
+    color: Color32,
+}
+
 fn runs_list(app: &mut App, ui: &mut Ui) {
     let s = app.s();
     let lang = app.lang;
@@ -84,22 +96,54 @@ fn runs_list(app: &mut App, ui: &mut Ui) {
                 return;
             }
 
-            for index in (0..app.logs.len()).rev() {
-                let log = &app.logs[index];
-                let (mark, color) = status_mark(ui, log);
-                let label = format!(
-                    "{mark} {} · {}",
-                    fmt_time(lang, &log.start_time),
-                    log.duration_secs()
-                        .map_or_else(|| "—".to_owned(), |secs| fmt_duration(lang, secs))
-                );
-                let selected = app.selected_log == Some(index);
-                if ui
-                    .selectable_label(selected, RichText::new(label).color(color))
-                    .clicked()
-                {
-                    app.selected_log = Some(index);
+            // Готовим строки заранее: дальше нужен `&mut app`, а список — только для чтения.
+            let rows: Vec<RunRow> = (0..app.logs.len())
+                .rev()
+                .map(|index| {
+                    let log = &app.logs[index];
+                    let (mark, color) = status_mark(ui, log);
+                    let when = fmt_time(lang, &log.start_time);
+                    RunRow {
+                        index,
+                        log_id: log.id.clone(),
+                        label: format!(
+                            "{mark} {when} · {}",
+                            log.duration_secs()
+                                .map_or_else(|| "—".to_owned(), |secs| fmt_duration(lang, secs))
+                        ),
+                        when,
+                        color,
+                    }
+                })
+                .collect();
+
+            let mut rerun: Option<String> = None;
+            let mut delete: Option<(String, String)> = None;
+            for row in rows {
+                let selected = app.selected_log == Some(row.index);
+                let response =
+                    ui.selectable_label(selected, RichText::new(&row.label).color(row.color));
+                if response.clicked() {
+                    app.selected_log = Some(row.index);
                 }
+                response.context_menu(|ui| {
+                    if ui.button(s.act_rerun).clicked() {
+                        rerun = Some(row.log_id.clone());
+                        ui.close();
+                    }
+                    let remove =
+                        Button::new(RichText::new(s.act_delete).color(ui.visuals().error_fg_color));
+                    if ui.add(remove).clicked() {
+                        delete = Some((row.log_id.clone(), row.when.clone()));
+                        ui.close();
+                    }
+                });
+            }
+            if let Some(log_id) = rerun {
+                app.rerun_log(&log_id);
+            }
+            if let Some((log_id, when)) = delete {
+                app.dialog = Some(Dialog::DeleteRun { log_id, when });
             }
         });
 }
@@ -114,7 +158,7 @@ fn status_mark(ui: &Ui, log: &ExecutionLog) -> (&'static str, Color32) {
     }
 }
 
-fn run_details(app: &App, ui: &mut Ui) {
+fn run_details(app: &mut App, ui: &mut Ui) {
     let s = app.s();
     let lang = app.lang;
 
@@ -128,20 +172,19 @@ fn run_details(app: &App, ui: &mut Ui) {
         });
         run_progress(ui, lang, run);
         ui.add_space(6.0);
-        ui.label(RichText::new("stdout").strong());
-        output_block(ui, &run.stdout, None, "live_stdout");
-        ui.add_space(6.0);
-        ui.label(RichText::new("stderr").strong());
-        output_block(
-            ui,
-            &run.stderr,
-            Some(ui.visuals().error_fg_color),
-            "live_stderr",
-        );
+        let (open, copy) = output_header(ui, s, &run.output);
+        output_view(ui, &run.output, "live_output", Some(260.0), true);
         ui.add_space(6.0);
         egui::CollapsingHeader::new(s.run_script)
             .id_salt("live_script_header")
             .show(ui, |ui| output_block(ui, &run.script, None, "live_script"));
+
+        if open {
+            app.open_output_window(None);
+        }
+        if copy {
+            app.set_status(s.st_copied);
+        }
         return;
     }
 
@@ -181,16 +224,13 @@ fn run_details(app: &App, ui: &mut Ui) {
     }
 
     ui.add_space(6.0);
-    ui.label(RichText::new("stdout").strong());
-    output_block(ui, &log.stdout, None, "log_stdout");
-    ui.add_space(6.0);
-    ui.label(RichText::new("stderr").strong());
-    output_block(
-        ui,
-        &log.stderr,
-        Some(ui.visuals().error_fg_color),
-        "log_stderr",
-    );
+    let output = log.output.as_str();
+    let (open, copy) = output_header(ui, s, output);
+    output_view(ui, output, "log_output", Some(260.0), false);
+    // Кнопки меняют состояние приложения, а вывод в это время одолжен у него же —
+    // поэтому запоминаем намерение и применяем его, когда заимствование кончится.
+    let open_window = open.then(|| log.id.clone());
+    let copied = copy;
 
     ui.add_space(6.0);
     egui::CollapsingHeader::new(s.log_script)
@@ -213,6 +253,13 @@ fn run_details(app: &App, ui: &mut Ui) {
             ui.label(RichText::new(s.log_diff_none).weak());
         }
     });
+
+    if let Some(log_id) = open_window {
+        app.open_output_window(Some(log_id));
+    }
+    if copied {
+        app.set_status(s.st_copied);
+    }
 }
 
 // ---------------- история изменений ----------------
@@ -387,6 +434,8 @@ mod tests {
             dialog: None::<Dialog>,
             status: None,
             lang: crate::i18n::Lang::Ru,
+            drag: None,
+            output_window: None,
         }
     }
 

@@ -67,6 +67,7 @@ pub struct Strings {
     pub tree_group: &'static str,
     pub tree_command: &'static str,
     pub tree_empty: &'static str,
+    pub tree_drag_tip: &'static str,
     pub ctx_group_inside: &'static str,
     pub ctx_command_inside: &'static str,
 
@@ -77,6 +78,7 @@ pub struct Strings {
     pub act_delete: &'static str,
     pub act_export: &'static str,
     pub act_import: &'static str,
+    pub act_rerun: &'static str,
 
     // свойства команды
     pub pick_command: &'static str,
@@ -118,6 +120,10 @@ pub struct Strings {
     pub run_no_code: &'static str,
     pub run_params: &'static str,
     pub run_script: &'static str,
+    pub run_output: &'static str,
+    pub run_output_hint: &'static str,
+    pub run_output_window: &'static str,
+    pub run_output_copy: &'static str,
     pub log_script: &'static str,
     pub log_diff_changed: &'static str,
     pub log_diff_same: &'static str,
@@ -151,7 +157,10 @@ pub struct Strings {
     pub dlg_rename: &'static str,
     pub dlg_new_name: &'static str,
     pub dlg_move_title: &'static str,
-    pub dlg_move_hint: &'static str,
+    pub dlg_move_parent: &'static str,
+    pub dlg_move_number: &'static str,
+    pub dlg_move_was: &'static str,
+    pub dlg_move_now: &'static str,
     pub dlg_root: &'static str,
     pub dlg_delete_title: &'static str,
     pub dlg_delete_folder_q: &'static str,
@@ -159,6 +168,9 @@ pub struct Strings {
     pub dlg_delete_command_info: &'static str,
     pub dlg_delete_folder_info: &'static str,
     pub dlg_delete_warn: &'static str,
+    pub dlg_delete_run_title: &'static str,
+    pub dlg_delete_run_q: &'static str,
+    pub dlg_delete_run_info: &'static str,
     pub dlg_run_title: &'static str,
     pub dlg_run_params: &'static str,
     pub dlg_unsaved_title: &'static str,
@@ -187,6 +199,8 @@ pub struct Strings {
     pub st_renamed: &'static str,
     pub st_moved: &'static str,
     pub st_deleted: &'static str,
+    pub st_run_deleted: &'static str,
+    pub st_copied: &'static str,
     pub st_saved: &'static str,
     pub st_no_changes: &'static str,
     pub st_reverted: &'static str,
@@ -226,6 +240,7 @@ pub const RU: Strings = Strings {
     tree_group: "Группа",
     tree_command: "Команда",
     tree_empty: "Пусто. Создайте группу или команду кнопкой выше.",
+    tree_drag_tip: "Клик — открыть, перетаскивание — перенести",
     ctx_group_inside: "Добавить новую группу",
     ctx_command_inside: "Добавить новую команду",
 
@@ -235,6 +250,7 @@ pub const RU: Strings = Strings {
     act_delete: "Удалить",
     act_export: "Экспорт",
     act_import: "Импорт",
+    act_rerun: "Запустить снова",
 
     pick_command: "Выберите команду в дереве слева",
     folder_stats: "Вложенных групп: {} · команд: {}",
@@ -274,6 +290,10 @@ pub const RU: Strings = Strings {
     run_no_code: "завершено без кода (остановлено или не запустилось)",
     run_params: "Параметры запуска",
     run_script: "Скрипт запуска",
+    run_output: "Вывод",
+    run_output_hint: "красным — stderr (в файле такие строки помечены «!»)",
+    run_output_window: "Открыть вывод в отдельном окне",
+    run_output_copy: "Скопировать вывод в буфер обмена",
     log_script: "Скрипт, который выполнялся",
     log_diff_changed: "Отличия от текущей версии команды",
     log_diff_same: "Совпадает с текущей версией команды",
@@ -305,7 +325,10 @@ pub const RU: Strings = Strings {
     dlg_rename: "Переименование",
     dlg_new_name: "Новое имя",
     dlg_move_title: "Перенести «{}»",
-    dlg_move_hint: "Выберите группу назначения:",
+    dlg_move_parent: "Родитель",
+    dlg_move_number: "Номер",
+    dlg_move_was: "было: {}",
+    dlg_move_now: "стало: {}",
     dlg_root: "(корень)",
     dlg_delete_title: "Подтверждение удаления",
     dlg_delete_folder_q: "Удалить группу «{}»?",
@@ -313,6 +336,9 @@ pub const RU: Strings = Strings {
     dlg_delete_command_info: "Команда будет удалена вместе с историей: запусков — {}, версий — {}.",
     dlg_delete_folder_info: "Будут удалены вложенные группы ({}) и команды ({}) вместе со всей их историей.",
     dlg_delete_warn: "Действие необратимо: файлы будут удалены с диска.",
+    dlg_delete_run_title: "Удаление запуска",
+    dlg_delete_run_q: "Удалить запуск от {}?",
+    dlg_delete_run_info: "Пропадут вывод, код возврата и параметры этого запуска.",
     dlg_run_title: "Запуск «{}»",
     dlg_run_params: "Значения параметров:",
     dlg_unsaved_title: "Несохранённые изменения",
@@ -329,14 +355,16 @@ pub const RU: Strings = Strings {
     dlg_import_json: "Файл распознан как экспорт команды: имя, комментарий и параметры импортируются целиком.",
     dlg_about_title: "О программе",
     about_text: "cmdrerun — хранилище shell-скриптов с историей.\n\n\
-• Дерево слева: группы и команды, перенос и переименование через контекстное меню.\n\
+• Дерево слева: группы и команды. Клик открывает узел, перетаскивание переносит его \
+(подтверждение покажет, что меняется), остальное — в контекстном меню.\n\
 • Команда — это скрипт, комментарий и параметры (String, Text, Boolean, Choice, Password), \
 как параметры сборки в Jenkins. Значения подставляются вместо ${ИМЯ} и передаются в процесс \
 переменными окружения.\n\
 • Каждое сохранение кладёт предыдущую версию целиком в историю изменений; diff показан \
 по-гитовски: зелёное добавлено, красное удалено, серое заменено.\n\
-• Запуск идёт в фоне: вывод виден по мере выполнения, полоса прогресса строится по медиане \
-прошлых длительностей. В историю попадает скрипт с подставленными параметрами, вывод и код возврата.\n\
+• Запуск идёт в фоне: stdout и stderr показываются одной лентой в порядке появления строк, \
+ошибки красным, полоса прогресса строится по медиане прошлых длительностей. В историю попадает \
+скрипт с подставленными параметрами, вывод и код возврата.\n\
 • Команду можно импортировать из файла копией или связью — связанный скрипт правится прямо в исходном файле.\n\
 • Всё хранится обычными JSON-файлами, путь виден в правом нижнем углу.",
     btn_ok: "Готово",
@@ -350,6 +378,8 @@ pub const RU: Strings = Strings {
     st_renamed: "Переименовано в «{}»",
     st_moved: "«{}» перенесено",
     st_deleted: "Удалено: «{}»",
+    st_run_deleted: "Запуск удалён из истории",
+    st_copied: "Вывод скопирован в буфер обмена",
     st_saved: "Сохранено: {} (версия записана в историю)",
     st_no_changes: "Изменений нет",
     st_reverted: "Изменения отменены",
@@ -389,6 +419,7 @@ pub const EN: Strings = Strings {
     tree_group: "Group",
     tree_command: "Command",
     tree_empty: "Empty. Create a group or a command with the button above.",
+    tree_drag_tip: "Click to open, drag to move",
     ctx_group_inside: "New group inside",
     ctx_command_inside: "New command inside",
 
@@ -398,6 +429,7 @@ pub const EN: Strings = Strings {
     act_delete: "Delete",
     act_export: "Export…",
     act_import: "Import…",
+    act_rerun: "Run again",
 
     pick_command: "Select a command in the tree on the left",
     folder_stats: "Nested groups: {} · commands: {}",
@@ -437,6 +469,10 @@ pub const EN: Strings = Strings {
     run_no_code: "finished without an exit code (stopped or failed to start)",
     run_params: "Run parameters",
     run_script: "Script being run",
+    run_output: "Output",
+    run_output_hint: "red is stderr (such lines are marked with “!” in the file)",
+    run_output_window: "Open the output in a separate window",
+    run_output_copy: "Copy the output to the clipboard",
     log_script: "Script that was executed",
     log_diff_changed: "Differences from the current version",
     log_diff_same: "Same as the current version",
@@ -468,7 +504,10 @@ pub const EN: Strings = Strings {
     dlg_rename: "Rename",
     dlg_new_name: "New name",
     dlg_move_title: "Move “{}”",
-    dlg_move_hint: "Choose the destination group:",
+    dlg_move_parent: "Parent",
+    dlg_move_number: "Number",
+    dlg_move_was: "was: {}",
+    dlg_move_now: "now: {}",
     dlg_root: "(root)",
     dlg_delete_title: "Confirm deletion",
     dlg_delete_folder_q: "Delete group “{}”?",
@@ -476,6 +515,9 @@ pub const EN: Strings = Strings {
     dlg_delete_command_info: "The command will be deleted with its history: runs — {}, versions — {}.",
     dlg_delete_folder_info: "Nested groups ({}) and commands ({}) will be deleted with all their history.",
     dlg_delete_warn: "This cannot be undone: the files are removed from disk.",
+    dlg_delete_run_title: "Delete run",
+    dlg_delete_run_q: "Delete the run from {}?",
+    dlg_delete_run_info: "Its output, exit code and parameters will be gone.",
     dlg_run_title: "Run “{}”",
     dlg_run_params: "Parameter values:",
     dlg_unsaved_title: "Unsaved changes",
@@ -492,15 +534,16 @@ pub const EN: Strings = Strings {
     dlg_import_json: "Recognised as a command export: name, comment and parameters are imported as a whole.",
     dlg_about_title: "About",
     about_text: "cmdrerun — a store for shell scripts with history.\n\n\
-• Tree on the left: groups and commands; move and rename from the context menu.\n\
+• Tree on the left: groups and commands. A click opens a node, dragging moves it (the \
+confirmation shows what changes), everything else is in the context menu.\n\
 • A command is a script, a comment and parameters (String, Text, Boolean, Choice, Password), \
 like Jenkins build parameters. Values replace ${NAME} and are passed to the process as \
 environment variables.\n\
 • Every save puts the whole previous version into the change history; the diff is git-like: \
 green added, red removed, grey replaced.\n\
-• Runs happen in the background: output appears as it comes, and the progress bar is based on the \
-median of past durations. The history keeps the script with substituted parameters, the output \
-and the exit code.\n\
+• Runs happen in the background: stdout and stderr appear as one stream in the order the lines \
+arrive, stderr in red, and the progress bar is based on the median of past durations. The history \
+keeps the script with substituted parameters, the output and the exit code.\n\
 • A command can be imported from a file as a copy or as a link — a linked script is edited \
 directly in its original file.\n\
 • Everything is stored as plain JSON files; the path is shown in the bottom right corner.",
@@ -515,6 +558,8 @@ directly in its original file.\n\
     st_renamed: "Renamed to “{}”",
     st_moved: "“{}” moved",
     st_deleted: "Deleted: “{}”",
+    st_run_deleted: "Run removed from the history",
+    st_copied: "Output copied to the clipboard",
     st_saved: "Saved: {} (version written to history)",
     st_no_changes: "Nothing changed",
     st_reverted: "Changes discarded",
