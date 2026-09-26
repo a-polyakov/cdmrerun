@@ -1,144 +1,145 @@
 # cmdrerun
 
-Десктопное приложение на Rust + [egui 0.36.1](https://github.com/emilk/egui) для хранения и запуска
-shell-скриптов: дерево команд, версионирование с git-подобным diff'ом, параметры в стиле Jenkins
-и полная история запусков. Интерфейс на русском и английском.
+*English · [Русский](README.ru.md)*
 
-## Запуск
+A desktop app in Rust + [egui 0.36.1](https://github.com/emilk/egui) for storing and running
+shell scripts: a command tree, git-like version history with diffs, Jenkins-style build
+parameters, and a full run history.
+
+## Running
 
 ```bash
 cargo run --release
 ```
 
-## Интерфейс
+## Interface
 
-**Главное меню**
+**Main menu**
 
-- **Файл** — импорт и экспорт команды, выход.
-- **Настройки** — язык интерфейса (русский / English).
-- **Справка** — «О программе» с кратким описанием возможностей.
+- **File** — import and export a command, quit.
+- **Settings** — interface language (Russian / English).
+- **Help** — "About" with a short overview of what the app does.
 
-**Слева — дерево.** Ветки это группы, листья это команды. Кнопка «+ Добавить»
-открывает меню: группа, команда или импорт. Всё остальное — в контекстном меню узла по правой
-кнопке: запустить, экспорт, переименовать, удалить. Удаление всегда спрашивает подтверждение
-и показывает, что именно пропадёт.
+**Left — the tree.** Branches are groups, leaves are commands. The "+ Add" button opens
+a menu: group, command, or import. Everything else is in the node's right-click context menu:
+run, export, rename, delete.
 
-Короткий клик по узлу открывает его справа. Если нажать и потянуть — начинается перенос:
-за курсором едет имя узла, а место будущей высадки подсвечивается. У края строки это линия
-(«встать рядом»), у середины группы — рамка вокруг неё («положить внутрь»). Отпустили —
-появляется окно подтверждения с тем, что изменится:
+A short click on a node opens it on the right. Press and drag to start moving it: the node's
+name follows the cursor, and the drop target is highlighted. Near the edge of a row that's a
+line ("place next to it"); over the middle of a group it's a frame around it ("place inside").
 
-- **Родитель** — «было» и «стало»; если группа не меняется, раздела нет вовсе;
-- **Номер** — место среди соседей, тоже «было» и «стало».
+**Right — the selected item.** For a group, that's its path and stats about what's nested
+inside. For a command, the panel splits in half vertically: top-left holds the properties
+(name, comment, script), top-right the parameters, and the bottom has two history tabs — runs
+and changes.
 
-Порядок узлов запоминается: перенос расставляет соседям номера, и после перезапуска
-дерево выглядит так же.
+The selected node, expanded groups, and language are all remembered: the app reopens exactly
+where you left it.
 
-**Справа — выбранный элемент.** Для группы это путь и статистика вложенного. Для команды панель
-делится пополам по вертикали: сверху слева свойства (имя, комментарий, скрипт), сверху справа
-параметры, снизу две вкладки истории — запусков и изменений.
+## Parameters
 
-Выбранный узел, раскрытые группы и язык запоминаются: после перезапуска приложение открывается
-там же, где его закрыли.
+The types are modeled after Jenkins build parameters:
 
-## Параметры
-
-Типы взяты по образцу параметров сборки Jenkins:
-
-| Тип | Поле ввода |
+| Type | Input field |
 | --- | --- |
-| `String` | однострочный ввод |
-| `Text` | многострочный ввод |
-| `Boolean` | флажок (`true` / `false`) |
-| `Choice` | выпадающий список из заданных вариантов |
-| `Password` | ввод со скрытыми символами |
+| `String` | single-line input |
+| `Text` | multi-line input |
+| `Boolean` | checkbox (`true` / `false`) |
+| `Choice` | dropdown of predefined options |
+| `Password` | masked input |
 
-Значения подставляются в скрипт вместо `${ИМЯ}` и дополнительно передаются процессу как
-переменные окружения. Другие `${...}` остаются в тексте нетронутыми и достаются оболочке —
-`${HOME}` продолжает работать как обычно.
+Values replace `${NAME}` in the script and are also passed to the process as environment
+variables. Other `${...}` are left untouched and go straight to the shell — `${HOME}` keeps
+working as usual.
 
-## Версионирование
+## Version history
 
-При сохранении команды предыдущая версия целиком (имя, скрипт, комментарий, параметры)
-уходит в историю изменений. Вкладка «История изменений» показывает построчный diff между
-версией и тем, что пришло ей на смену:
+Saving a command pushes the previous version in full (name, script, comment, parameters) into
+the change history. The "Change history" tab shows a line-by-line diff between a version and
+whatever replaced it:
 
-- **зелёный** — добавлено;
-- **красный** — удалено;
-- **серый** — заменено.
+- **green** — added;
+- **red** — removed;
+- **gray** — replaced.
 
-Кнопка «Восстановить в редактор» подставляет старую версию в поля редактора — применяется она
-обычным «Сохранить», то есть тоже попадает в историю.
+The "Restore into editor" button loads the old version into the editor fields — applying it is
+done with the regular "Save" button, so it lands in the history too.
 
-## Параллельные запуски
+## Concurrent runs
 
-Разные команды можно запускать одновременно: долгая сборка одной не мешает запустить другую —
-каждый запуск идёт в своём потоке. Пока команда выполняется где-то в фоне, в дереве слева она
-помечена оранжевой точкой. Повторно запустить уже выполняющуюся команду нельзя — кнопка
-«Запустить» для неё заблокирована, пока не появится «Остановить».
+Different commands can run at the same time: a long build of one doesn't block starting
+another — each run happens on its own thread. While a command is running somewhere in the
+background, it's marked with an orange dot in the tree on the left. Starting an already-running
+command again isn't possible — its "Run" button stays disabled until "Stop" appears.
 
-## Запуск и прогресс
+## Running and progress
 
-Перед запуском несохранённые правки записываются автоматически, поэтому в истории всегда есть
-версия, которая выполнялась.
+Unsaved edits are written automatically before a run, so the history always has the exact
+version that was executed.
 
-Команда выполняется в `$SHELL -c` (на Windows — `cmd /C`) в фоновом потоке, рабочий каталог —
-домашний. `stdout` и `stderr` читаются построчно и появляются в UI по мере выполнения,
-кнопка «Остановить» убивает процесс.
+The command runs in `$SHELL -c` (`cmd /C` on Windows) on a background thread, with the home
+directory as the working directory. `stdout` and `stderr` are read line by line and appear in
+the UI as they happen; the "Stop" button kills the process.
 
-Полоса прогресса строится по медиане длительностей последних десяти завершённых запусков этой
-команды. Пока запуск не завершился, полоса не доходит до 100%; если запуск идёт дольше медианы,
-подпись честно сообщает «дольше обычного». Для первого запуска прогноза нет — показывается
-индикатор без процентов.
+The progress bar is built from the median duration of the command's last ten completed runs.
+While a run is still going, the bar never reaches 100%; if a run takes longer than the median,
+the label honestly says "longer than usual". There's no estimate for the very first run — it
+just shows an indicator with no percentage.
 
-`stdout` и `stderr` показываются одной лентой в порядке появления строк — иначе непонятно,
-на каком шаге команда ругнулась. Строки из `stderr` подсвечены красным, а в файле истории
-помечены символом `!` в начале строки (у обычных строк там два пробела). Точность склейки
-такая же, как у самих потоков: программа, которая буферизует `stdout`, отдаст его позже,
-чем `stderr`, — тут ничего не поделать.
+`stdout` and `stderr` are shown as a single stream in the order the lines actually arrived —
+otherwise it's unclear at which step the command failed. Lines from `stderr` are highlighted in
+red, and in the history file they're marked with a `!` at the start of the line (ordinary lines
+get two spaces instead). The merge is only as accurate as the streams themselves: a program
+that buffers `stdout` will have it show up later than `stderr` — nothing to be done about that.
 
-Рядом с заголовком «Вывод» две кнопки: **⛶** открывает вывод в отдельном окне (там он
-целиком, живой запуск продолжает дописываться), **🗐** копирует его в буфер обмена без пометок.
+Next to the "Output" heading are two buttons: **⛶** opens the output in a separate window (the
+full thing, and a live run keeps appending to it there too), **🗐** copies it to the clipboard
+without the markers.
 
-В историю пишется вся информация о запуске: скрипт с подставленными параметрами, значения
-параметров, вывод, код возврата, время начала и конца. Для каждого запуска можно
-раскрыть diff с текущей версией команды — видно, насколько скрипт с тех пор изменился.
-В контекстном меню записи истории — «Запустить снова» (значения параметров берутся из того
-запуска; пароли в историю не пишутся, поэтому их подставляет сама команда) и «Удалить»
-с подтверждением.
+The full run is written to history: the script with parameters substituted, the parameter
+values, the output, the exit code, and the start/end time. For each run you can expand a diff
+against the current version of the command — showing how much the script has changed since
+then. The history entry's context menu has "Run again" (parameter values are taken from that
+run; passwords aren't written to history, so the command itself supplies them) and "Delete"
+with confirmation.
 
-**Пароли на диск не попадают.** В сохранённом скрипте и в списке параметров значения типа
-`Password` заменяются на `********`; в сам процесс передаётся настоящее значение.
+**Passwords never touch disk.** In the saved script and in the parameter list, `Password`
+values are replaced with `********`; the real value is only passed to the process itself.
 
-## Импорт и экспорт
+## Import and export
 
-- **Экспорт** (`Файл → Экспорт команды…`, кнопка на панели команды или контекстное меню):
-  расширение `.json` сохраняет команду целиком — имя, комментарий, скрипт и параметры;
-  любое другое расширение сохраняет только скрипт.
-- **Импорт** (`Файл → Импорт команды…`): для скрипта можно выбрать режим.
-  - **Копия** — содержимое файла копируется в хранилище, дальше файл не используется.
-  - **Связь** — в команде хранится путь к оригинальному файлу: скрипт читается оттуда при
-    открытии команды и записывается туда же при сохранении. История версий при этом ведётся
-    как обычно. Связь видна рядом с заголовком «Скрипт», там же кнопки «Перечитать» и «Отвязать».
-  - Файл экспорта (`.json`) импортируется целиком и всегда копией — связывать в нём нечего.
+- **Export** (`File → Export command…`, a button on the command panel, or the context menu):
+  the `.json` extension saves the whole command — name, comment, script, and parameters; any
+  other extension saves just the script.
+- **Import** (`File → Import command…`): for a script, you can choose a mode.
+  - **Copy** — the file's contents are copied into the store; the file itself isn't used
+    afterward.
+  - **Link** — the command stores the path to the original file: the script is read from it
+    when the command is opened and written back to it when saved. Version history still works
+    as usual. The link is shown next to the "Script" heading, along with "Reload" and "Unlink"
+    buttons.
+  - An export file (`.json`) is always imported whole, and always as a copy — there's nothing
+    to link to.
 
-## Хранение
+## Storage
 
-Всё лежит обычными JSON-файлами. Каталог по умолчанию — стандартный каталог данных ОС
-(на macOS `~/Library/Application Support/cmdrerun`), переопределяется переменной `CMDRERUN_HOME`:
+Everything is stored as plain JSON files. The default directory is the OS's standard data
+directory (`~/Library/Application Support/cmdrerun` on macOS), and can be overridden with the
+`CMDRERUN_HOME` environment variable:
 
 ```text
-<каталог>/settings.json                                     язык, выбор в дереве, раскрытые группы
-<каталог>/folders/<folder_id>.json
-<каталог>/commands/<command_id>.json
-<каталог>/history/<command_id>/runs/<время>__<log_id>.json
-<каталог>/history/<command_id>/changes/<время>__<change_id>.json
+<dir>/settings.json                                     language, tree selection, expanded groups
+<dir>/folders/<folder_id>.json
+<dir>/commands/<command_id>.json
+<dir>/history/<command_id>/runs/<timestamp>__<log_id>.json
+<dir>/history/<command_id>/changes/<timestamp>__<change_id>.json
 ```
 
-Файлы пишутся через временный файл с последующим переименованием, поэтому обрыв записи
-не оставит битый JSON. Путь к текущему каталогу виден в правом нижнем углу окна.
+Files are written to a temporary file and then renamed into place, so an interrupted write
+never leaves a corrupt JSON file behind. The current storage path is shown in the bottom-right
+corner of the window.
 
-## Структура данных
+## Data structures
 
 ```rust
 enum ParamType { String, Text, Boolean, Choice(Vec<String>), Password }
@@ -149,12 +150,12 @@ struct ExecutionLog { id, command_id, script, output, exit_code, start_time, end
 struct ChangeLog    { id, command_id, old_script, old_params, old_name, old_comment, timestamp }
 ```
 
-## Разработка
+## Development
 
 ```bash
 cargo test
 cargo clippy --all-targets
 ```
 
-Строки интерфейса собраны в `src/i18n.rs`: две константы `RU` и `EN` с одинаковым набором полей,
-новый язык добавляется третьей константой и вариантом в `Lang`.
+Interface strings live in `src/i18n.rs`: two constants, `RU` and `EN`, with the same set of
+fields; a new language is added as a third constant plus a new `Lang` variant.

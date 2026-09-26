@@ -2,6 +2,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, Command as ShellCommand, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -90,6 +91,12 @@ pub struct ActiveRun {
     finish_instant: Option<Instant>,
     rx: Receiver<RunEvent>,
     child: Arc<Mutex<Option<Child>>>,
+    /// «Остановить» нажали раньше, чем воркер успел записать процесс в `child`
+    /// (сам спуск процесса не мгновенный) — тогда убивать пока нечего, и об
+    /// этом сигнализируем воркеру сюда: он проверит флаг сразу же, как только
+    /// процесс появится в `child`, и убьёт его сам, не дожидаясь следующего
+    /// вызова `cancel`, которого может и не быть.
+    cancel_requested: Arc<AtomicBool>,
 }
 
 impl ActiveRun {
@@ -100,6 +107,7 @@ impl ActiveRun {
 
         let (tx, rx) = channel();
         let child = Arc::new(Mutex::new(None));
+        let cancel_requested = Arc::new(AtomicBool::new(false));
         let env: Vec<(String, String)> = params
             .iter()
             .filter(|p| !p.name.is_empty())
@@ -108,7 +116,8 @@ impl ActiveRun {
 
         {
             let child = Arc::clone(&child);
-            thread::spawn(move || worker(resolved, env, tx, child));
+            let cancel_requested = Arc::clone(&cancel_requested);
+            thread::spawn(move || worker(resolved, env, tx, child, cancel_requested));
         }
 
         Self {
@@ -133,6 +142,7 @@ impl ActiveRun {
             finish_instant: None,
             rx,
             child,
+            cancel_requested,
         }
     }
 
@@ -187,10 +197,13 @@ impl ActiveRun {
     /// Останавливает процесс (кнопка «Остановить»).
     pub fn cancel(&mut self) {
         self.cancelled = true;
+        // Ставим флаг всегда: если воркер ещё не успел записать процесс сюда
+        // (см. поле cancel_requested), он проверит флаг сам, как только сможет.
+        self.cancel_requested.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.child.lock()
             && let Some(child) = guard.as_mut()
         {
-            let _ = child.kill();
+            kill_tree(child);
         }
     }
 
@@ -213,6 +226,7 @@ fn worker(
     env: Vec<(String, String)>,
     tx: Sender<RunEvent>,
     child_slot: Arc<Mutex<Option<Child>>>,
+    cancel_requested: Arc<AtomicBool>,
 ) {
     let mut builder = shell_command();
     builder
@@ -240,6 +254,12 @@ fn worker(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     if let Ok(mut slot) = child_slot.lock() {
+        // «Остановить» могли нажать ещё до того, как процесс попал в слот —
+        // тогда cancel() выше не нашёл, что убивать. Догоняем это здесь же,
+        // пока слот всё равно у нас в руках.
+        if cancel_requested.load(Ordering::SeqCst) {
+            kill_tree(&mut child);
+        }
         *slot = Some(child);
     }
 
@@ -291,11 +311,65 @@ fn spawn_reader<R: Read + Send + 'static>(
     })
 }
 
+/// Убивает не только сам процесс, но и всех его потомков.
+///
+/// Команда часто сама плодит дочерние процессы — `apt update` форкает по
+/// отдельному процессу на каждый источник пакетов, `ansible` — по процессу
+/// на хост, и т.п. Обычный `child.kill()` достаёт только ту оболочку, что
+/// запустили мы; её потомки остаются висеть и, что хуже, продолжают
+/// держать открытыми унаследованные от нас `stdout`/`stderr` — из-за этого
+/// чтение вывода не видит конца потока, и запуск никогда не помечается
+/// завершённым, хотя «Остановить» вроде бы нажали.
+///
+/// На Unix `shell_command` запускает оболочку лидером новой сессии (`setsid`,
+/// а значит и новой группы процессов), так что `kill(-pid, …)` здесь убивает
+/// разом всю группу — оболочку и всех её потомков, которые сами группу
+/// не меняли.
+#[cfg(unix)]
+fn kill_tree(child: &mut Child) {
+    let pid = child.id() as libc::pid_t;
+    // SAFETY: `kill` не разыменовывает никаких указателей, просто просит ядро
+    // доставить сигнал; отрицательный pid — это «всей группе», см. kill(2).
+    let killed_group = unsafe { libc::kill(-pid, libc::SIGKILL) } == 0;
+    if !killed_group {
+        // Группу убить не вышло (например, её уже нет) — хотя бы саму оболочку.
+        let _ = child.kill();
+    }
+}
+
+/// На Windows своей группы процессов через `std` не завести, поэтому дочерние
+/// процессы команды могут пережить «Остановить» — известное ограничение.
+#[cfg(windows)]
+fn kill_tree(child: &mut Child) {
+    let _ = child.kill();
+}
+
 #[cfg(unix)]
 fn shell_command() -> ShellCommand {
+    use std::os::unix::process::CommandExt;
+
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
     let mut cmd = ShellCommand::new(shell);
     cmd.arg("-c");
+    // Новая сессия, а не только своя группа процессов: setsid() заодно и делает
+    // процесс лидером новой группы (нужно для kill_tree), и — что здесь важнее —
+    // отвязывает его от управляющего терминала совсем. Без этого `sudo`, `ssh`
+    // и подобные программы, которым для пароля нужен именно терминал, находят
+    // терминал того окна, откуда запущен cmdrerun, и молча ждут ввода там —
+    // мы этого не видим и напечатать туда ничего не можем, команда висит
+    // «выполняется» вечно с пустым выводом. Без терминала они, как правило,
+    // сразу и понятно пишут об этом в stderr вместо того, чтобы висеть.
+    //
+    // SAFETY: setsid() — async-signal-safe системный вызов (гарантия POSIX),
+    // так что звать его здесь, между fork и exec, безопасно.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     cmd
 }
 
@@ -358,5 +432,86 @@ mod tests {
         let logs = vec![make(2), make(10), make(6)];
         assert_eq!(estimate_secs(&logs), Some(6.0));
         assert_eq!(estimate_secs(&[]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_kills_children_the_command_spawned_too() {
+        // Реальный случай: `apt update`, `ansible` и подобные заводят себе
+        // дочерние процессы. Тут это `sleep`, оставленный висеть в фоне и
+        // унаследовавший наши stdout/stderr, — если бы «Остановить» убивало
+        // только саму оболочку, чтение вывода никогда не увидело бы конца
+        // потока (в дочернем процессе всё ещё открыт пишущий конец пайпа),
+        // и запуск навсегда остался бы «выполняется» даже после отмены.
+        let mut command = Command::new("Тест", None);
+        // "started" печатается уже ПОСЛЕ того, как фоновый sleep реально
+        // зафоркан, — ждём её в выводе, чтобы наверняка отменять команду,
+        // когда убивать действительно есть кого, а не саму ещё не успевшую
+        // запуститься оболочку (иначе тест ничего бы не проверял).
+        command.script = "sleep 999 &\necho started\nwait\n".to_owned();
+        let mut run = ActiveRun::start(&command, Vec::new(), None);
+
+        let spawn_deadline = Instant::now() + Duration::from_secs(5);
+        while !run.output.contains("started") && Instant::now() < spawn_deadline {
+            run.poll();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            run.output.contains("started"),
+            "фоновый процесс должен был успеть запуститься"
+        );
+
+        run.cancel();
+
+        let cancel_deadline = Instant::now() + Duration::from_secs(5);
+        while !run.finished && Instant::now() < cancel_deadline {
+            run.poll();
+            thread::sleep(Duration::from_millis(20));
+        }
+
+        assert!(
+            run.finished,
+            "запуск должен завершиться после «Остановить», даже если команда \
+             оставила в фоне собственного потомка"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_shell_has_no_controlling_terminal() {
+        // `setsid()` в shell_command должен сделать оболочку лидером новой
+        // сессии — тогда у сессии нет управляющего терминала вовсе, и такие
+        // программы, как sudo или ssh, не находят, куда молча написать
+        // «Password:» и повиснуть в ожидании ввода, которого никто не даст.
+        // Сессия без терминала проявляется как pid сессии, равный pid самой
+        // оболочки, — это и проверяем: `ps` печатает их оба.
+        let mut command = Command::new("Тест", None);
+        command.script = "ps -o pid=,sid= -p $$\n".to_owned();
+        let mut run = ActiveRun::start(&command, Vec::new(), None);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !run.finished && Instant::now() < deadline {
+            run.poll();
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(run.finished, "команда должна была успеть завершиться");
+
+        let numbers: Vec<i64> = run
+            .output
+            .split_whitespace()
+            .filter_map(|word| word.parse().ok())
+            .collect();
+        let [pid, sid] = numbers[..] else {
+            panic!(
+                "ожидались pid и sid одной строкой, получили: {:?}",
+                run.output
+            );
+        };
+        assert_eq!(
+            pid, sid,
+            "pid и sid оболочки должны совпадать — иначе она не стала лидером \
+             своей сессии и осталась привязана к терминалу cmdrerun; вывод: {:?}",
+            run.output
+        );
     }
 }

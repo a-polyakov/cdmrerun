@@ -11,7 +11,7 @@ use chrono::{DateTime, Local};
 use egui::{Color32, RichText, TextWrapMode, Ui};
 
 use crate::app::App;
-use crate::diff::{DiffLine, LineKind, line_colors};
+use crate::diff::{DiffLine, LineKind, SpanKind, line_colors};
 use crate::exec::ActiveRun;
 use crate::i18n::{Lang, Strings, fill1};
 use crate::model;
@@ -133,21 +133,70 @@ pub fn diff_view(ui: &mut Ui, lines: &[Option<DiffLine>]) {
                         Some(number) => format!("{number:>4}"),
                         None => "    ".to_owned(),
                     };
-                    let text = format!(
-                        "{} {} {} {}",
+                    let prefix = format!(
+                        "{} {} {} ",
                         number(line.old_no),
                         number(line.new_no),
-                        line.sign(),
-                        line.text
+                        line.sign()
                     );
+                    let job = diff_line_job(ui, &prefix, line, fg, dark);
                     egui::Frame::new().fill(bg).show(ui, |ui| {
                         ui.set_width(width);
-                        ui.label(mono(text).color(fg));
+                        ui.label(job);
                     });
                 }
             }
         }
     });
+}
+
+/// Строку diff'а собираем в [`egui::text::LayoutJob`], а не в одну `RichText`:
+/// у заменённой строки со словесной разбивкой ([`DiffLine::spans`]) разные куски
+/// красятся по-разному — общее с парной строкой как обычное «заменено», а то,
+/// что разошлось, — так же, как в чистой вставке или удалении. У всех остальных
+/// строк (включая заменённые без разбивки) вся строка красится одним цветом, как раньше.
+fn diff_line_job(
+    ui: &Ui,
+    prefix: &str,
+    line: &DiffLine,
+    fg: Color32,
+    dark: bool,
+) -> egui::text::LayoutJob {
+    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    let push = |job: &mut egui::text::LayoutJob, text: &str, color: Color32| {
+        job.append(
+            text,
+            0.0,
+            egui::text::TextFormat {
+                font_id: font_id.clone(),
+                color,
+                ..Default::default()
+            },
+        );
+    };
+    push(&mut job, prefix, fg);
+
+    match line.spans.as_deref() {
+        Some(spans) if !spans.is_empty() => {
+            // Знак строки уже говорит, минус она или плюс — по нему же выбираем,
+            // каким из двух цветов красить разошедшийся кусок.
+            let changed = if line.new_no.is_some() {
+                line_colors(LineKind::Added, dark).0
+            } else {
+                line_colors(LineKind::Removed, dark).0
+            };
+            for span in spans {
+                let color = match span.kind {
+                    SpanKind::Common => fg,
+                    SpanKind::Changed => changed,
+                };
+                push(&mut job, &span.text, color);
+            }
+        }
+        _ => push(&mut job, &line.text, fg),
+    }
+    job
 }
 
 /// Фон блоков вывода — чуть темнее (светлее) обычного, как у терминала.
@@ -179,6 +228,12 @@ pub fn output_view(ui: &mut Ui, output: &str, id: &str, max_height: Option<f32>,
                 return;
             }
             let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+            // `show_rows` меряет высоту прокрутки строка-за-строкой ещё ДО вызова
+            // замыкания ниже, по текущему `item_spacing.y` этого `ui` — так что
+            // обнулять его нужно здесь, а не внутри замыкания: там будет уже поздно,
+            // и по мере прокрутки внизу будет расти пустой хвост (виртуальная высота
+            // дорожки при отступе по умолчанию оказывается больше настоящей).
+            ui.spacing_mut().item_spacing.y = 0.0;
             // Без потолка по высоте вывод занимает всё, что дают: так он выглядит
             // в отдельном окне. С потолком — тянется по содержимому до него.
             // Строки не переносятся (см. TextWrapMode::Extend ниже), поэтому длинные
@@ -191,7 +246,6 @@ pub fn output_view(ui: &mut Ui, output: &str, id: &str, max_height: Option<f32>,
                 area = area.max_height(height);
             }
             area.show_rows(ui, row_height, lines.len(), |ui, range| {
-                ui.spacing_mut().item_spacing.y = 0.0;
                 for (is_error, text) in &lines[range] {
                     let mut rich = mono(*text);
                     if *is_error {

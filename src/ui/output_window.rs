@@ -1,8 +1,4 @@
 //! Отдельное окно с выводом команды.
-//!
-//! Просят его кнопкой рядом с выводом. Если система (или бэкенд) не умеет
-//! несколько окон, egui сам покажет содержимое плавающим окном внутри
-//! главного — код от этого не меняется.
 
 use egui::{Context, RichText, Ui, ViewportBuilder, ViewportId};
 
@@ -54,11 +50,6 @@ pub fn show(app: &mut App, ctx: &Context) {
                             copied = true;
                         }
                         ui.label(RichText::new(s.run_output_hint).weak().small());
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button(s.btn_close).clicked() {
-                                close = true;
-                            }
-                        });
                     });
                     ui.separator();
                     output_view(ui, output, "window_output", None, follow);
