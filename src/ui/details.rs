@@ -61,6 +61,14 @@ fn command_view(app: &mut App, ui: &mut Ui, id: &str) {
         .resizable(true)
         .default_size(half_height)
         .size_range(120.0..=1400.0)
+        // Справа отступ уже даёт внешняя панель; свой добавлял бы к нему ещё 8px,
+        // и вывод справа отстоял бы от края заметно дальше, чем слева от списка.
+        .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin {
+            left: 8,
+            right: 0,
+            top: 2,
+            bottom: 2,
+        }))
         .show(ui, |ui| history::history_tabs(app, ui));
 
     egui::CentralPanel::default().show(ui, |ui| {
@@ -146,19 +154,84 @@ fn properties(app: &mut App, ui: &mut Ui) {
         }
     });
 
-    // Скролл у самого редактора, иначе длинный скрипт растягивает всю панель.
-    egui::ScrollArea::vertical()
-        .id_salt("script_editor")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.add(
-                TextEdit::multiline(&mut app.editor.script)
-                    .code_editor()
-                    .desired_rows(10)
-                    .desired_width(f32::INFINITY),
-            );
-            ui.label(RichText::new(s.script_hint).weak().small());
-        });
+    // Поле скрипта занимает всё оставшееся место, прокрутка — внутри поля.
+    // Строки не переносятся: длинная команда остаётся одной строкой, как в терминале.
+    let hint = RichText::new(s.script_hint).weak().small();
+    let hint_height = ui.text_style_height(&egui::TextStyle::Small) + ui.spacing().item_spacing.y;
+    let size = egui::vec2(ui.available_width(), (ui.available_height() - hint_height).max(80.0));
+    script_editor(ui, &mut app.editor.script, size);
+    ui.label(hint);
+}
+
+/// Редактор скрипта: внутри — прокрутка в обе стороны и поле без переноса строк.
+fn script_editor(ui: &mut Ui, script: &mut String, size: egui::Vec2) -> egui::Response {
+    let id = ui.make_persistent_id("script_editor");
+    let focused = ui.memory(|memory| memory.has_focus(id));
+    let visuals = ui.visuals();
+    let stroke = if focused {
+        visuals.selection.stroke
+    } else {
+        visuals.widgets.inactive.bg_stroke
+    };
+    let frame = egui::Frame::new()
+        .fill(visuals.text_edit_bg_color())
+        .stroke(stroke)
+        .corner_radius(visuals.widgets.inactive.corner_radius)
+        .inner_margin(egui::Margin::same(4));
+    let inner = size - frame.total_margin().sum();
+
+    // Высоту `TextEdit` задаёт только числом строк (`min_size` в egui 0.36
+    // учитывает лишь ширину), поэтому считаем строки по высоте рамки.
+    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    let rows = ((inner.y / row_height).floor() as usize).max(1);
+
+    let shown = frame.show(ui, |ui| {
+        ui.set_min_size(inner);
+        ui.set_max_size(inner);
+        egui::ScrollArea::both()
+            .id_salt("script_editor_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap_width: f32| {
+                    let mut job = egui::text::LayoutJob::simple(
+                        text.as_str().to_owned(),
+                        egui::TextStyle::Monospace.resolve(ui.style()),
+                        ui.visuals().text_color(),
+                        f32::INFINITY,
+                    );
+                    job.wrap.max_width = f32::INFINITY;
+                    ui.fonts_mut(|fonts| fonts.layout_job(job))
+                };
+                // Внутри горизонтальной прокрутки ширина `ui` бесконечна, поэтому
+                // ширину задаём явно: поле не уже видимой части, а длинные строки
+                // раздвигают его.
+                let edit = ui.add(
+                    TextEdit::multiline(script)
+                        .id(id)
+                        .code_editor()
+                        .frame(egui::Frame::NONE)
+                        .margin(egui::Margin::ZERO)
+                        .desired_width(inner.x)
+                        .desired_rows(rows)
+                        .clip_text(false)
+                        .layouter(&mut layouter),
+                );
+                // Под последней строкой остаётся полоска меньше строки — клик
+                // по ней тоже ставит курсор в поле. Полоска идёт ниже поля и
+                // с ним не пересекается, так что клики по тексту не перехватывает.
+                let rest = inner.y - edit.rect.height() - ui.spacing().item_spacing.y;
+                if rest > 0.0
+                    && ui
+                        .allocate_response(egui::vec2(edit.rect.width(), rest), egui::Sense::click())
+                        .clicked()
+                {
+                    edit.request_focus();
+                }
+                edit
+            })
+            .inner
+    });
+    shown.inner
 }
 
 fn params_editor(app: &mut App, ui: &mut Ui) {
@@ -318,3 +391,7 @@ pub fn value_widget(ui: &mut Ui, param: &mut Parameter, id: egui::Id) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "details_tests.rs"]
+mod tests;

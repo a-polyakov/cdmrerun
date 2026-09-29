@@ -44,12 +44,39 @@ fn runs_tab(app: &mut App, ui: &mut Ui) {
         .size_range(160.0..=460.0)
         .show(ui, |ui| runs_list(app, ui));
 
-    egui::CentralPanel::default().show(ui, |ui| {
-        egui::ScrollArea::vertical()
-            .id_salt("run_details")
-            .auto_shrink([false, false])
-            .show(ui, |ui| run_details(app, ui));
-    });
+    // Общей прокрутки у правой части нет: вывод сам по себе прокручивается
+    // и занимает всё место, что остаётся между заголовком и нижними секциями.
+    egui::CentralPanel::default()
+        .frame(details_frame(ui))
+        .show(ui, |ui| run_details(app, ui));
+}
+
+/// Рамка правой части вкладок истории: без отступа справа, иначе между
+/// содержимым и краем окна остаётся пустая полоса (отступ нижней панели
+/// команды уже отделяет его от края).
+fn details_frame(ui: &Ui) -> egui::Frame {
+    egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin {
+        left: 8,
+        right: 0,
+        top: 8,
+        bottom: 8,
+    })
+}
+
+/// Нижняя полоса правой части (скрипт, сравнение с текущей версией).
+///
+/// Высота берётся по содержимому, а вывод над ней получает остаток —
+/// поэтому показывать её нужно ДО вывода.
+fn bottom_sections<R>(ui: &mut Ui, id: &'static str, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    egui::Panel::bottom(id)
+        .resizable(false)
+        .show_separator_line(false)
+        .frame(egui::Frame::new().inner_margin(egui::Margin {
+            top: 6,
+            ..Default::default()
+        }))
+        .show(ui, add_contents)
+        .inner
 }
 
 /// Строка списка запусков, подготовленная к отрисовке.
@@ -173,11 +200,12 @@ fn run_details(app: &mut App, ui: &mut Ui) {
         run_progress(ui, lang, run);
         ui.add_space(6.0);
         let (open, copy) = output_header(ui, s, &run.output);
-        output_view(ui, &run.output, "live_output", Some(260.0), true);
-        ui.add_space(6.0);
-        egui::CollapsingHeader::new(s.run_script)
-            .id_salt("live_script_header")
-            .show(ui, |ui| output_block(ui, &run.script, None, "live_script"));
+        bottom_sections(ui, "live_bottom", |ui| {
+            egui::CollapsingHeader::new(s.run_script)
+                .id_salt("live_script_header")
+                .show(ui, |ui| output_block(ui, &run.script, None, "live_script"));
+        });
+        output_view(ui, &run.output, "live_output", None, true);
 
         if open {
             app.open_output_window(None);
@@ -226,33 +254,40 @@ fn run_details(app: &mut App, ui: &mut Ui) {
     ui.add_space(6.0);
     let output = log.output.as_str();
     let (open, copy) = output_header(ui, s, output);
-    output_view(ui, output, "log_output", Some(260.0), false);
     // Кнопки меняют состояние приложения, а вывод в это время одолжен у него же —
     // поэтому запоминаем намерение и применяем его, когда заимствование кончится.
     let open_window = open.then(|| log.id.clone());
     let copied = copy;
 
-    ui.add_space(6.0);
-    egui::CollapsingHeader::new(s.log_script)
-        .id_salt("log_script_header")
-        .show(ui, |ui| output_block(ui, &log.script, None, "log_script"));
-
     let lines = app.log_vs_current(log);
-    egui::CollapsingHeader::new(if diff::has_changes(&lines) {
-        s.log_diff_changed
-    } else {
-        s.log_diff_same
-    })
-    .id_salt("log_vs_current")
-    .default_open(false)
-    .show(ui, |ui| {
-        if diff::has_changes(&lines) {
-            diff_legend(ui, s);
-            diff_view(ui, &diff::collapse_context(&lines, 3));
+    bottom_sections(ui, "log_bottom", |ui| {
+        egui::CollapsingHeader::new(s.log_script)
+            .id_salt("log_script_header")
+            .show(ui, |ui| output_block(ui, &log.script, None, "log_script"));
+
+        egui::CollapsingHeader::new(if diff::has_changes(&lines) {
+            s.log_diff_changed
         } else {
-            ui.label(RichText::new(s.log_diff_none).weak());
-        }
+            s.log_diff_same
+        })
+        .id_salt("log_vs_current")
+        .default_open(false)
+        .show(ui, |ui| {
+            if diff::has_changes(&lines) {
+                diff_legend(ui, s);
+                // Своя прокрутка с потолком, как у скрипта: иначе длинный дифф
+                // вытеснил бы вывод целиком.
+                egui::ScrollArea::vertical()
+                    .id_salt("log_vs_current_scroll")
+                    .max_height(220.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| diff_view(ui, &diff::collapse_context(&lines, 3)));
+            } else {
+                ui.label(RichText::new(s.log_diff_none).weak());
+            }
+        });
     });
+    output_view(ui, output, "log_output", None, false);
 
     if let Some(log_id) = open_window {
         app.open_output_window(Some(log_id));
@@ -272,7 +307,7 @@ fn changes_tab(app: &mut App, ui: &mut Ui) {
         .show(ui, |ui| changes_list(app, ui));
 
     let mut restore: Option<usize> = None;
-    egui::CentralPanel::default().show(ui, |ui| {
+    egui::CentralPanel::default().frame(details_frame(ui)).show(ui, |ui| {
         egui::ScrollArea::vertical()
             .id_salt("change_details")
             .auto_shrink([false, false])
@@ -388,79 +423,5 @@ fn change_details(app: &App, ui: &mut Ui, restore: &mut Option<usize>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
-
-    use super::*;
-    use crate::app::{Dialog, Editor};
-    use crate::i18n::RU;
-    use crate::exec::ActiveRun;
-    use crate::model::Command;
-    use crate::storage::Storage;
-
-    /// Приложение с реально выполняющимся запуском и без единого завершённого —
-    /// именно так выглядит самый первый запуск команды.
-    fn app_with_live_run_and_no_history() -> App {
-        let root = std::env::temp_dir().join(format!("cmdrerun-history-test-{}", crate::model::new_id()));
-        let storage = Storage::with_root(root);
-        storage.init().expect("init");
-
-        let mut command = Command::new("Тест", None);
-        command.script = "sleep 5\n".to_owned();
-        let run = ActiveRun::start(&command, Vec::new(), None);
-
-        App {
-            editor: Editor {
-                command_id: Some(command.id.clone()),
-                name: command.name.clone(),
-                script: command.script.clone(),
-                comment: String::new(),
-                params: Vec::new(),
-            },
-            storage,
-            folders: Vec::new(),
-            commands: vec![command],
-            selection: None,
-            expanded: HashSet::new(),
-            logs: Vec::new(),
-            changes: Vec::new(),
-            runs: vec![run],
-            bottom_tab: BottomTab::Runs,
-            selected_log: None,
-            selected_change: None,
-            dialog: None::<Dialog>,
-            status: None,
-            lang: crate::i18n::Lang::Ru,
-            drag: None,
-            output_window: None,
-        }
-    }
-
-    #[test]
-    fn live_run_hides_the_never_ran_placeholder() {
-        let app = app_with_live_run_and_no_history();
-        let root = app.storage.root().to_path_buf();
-
-        let mut harness = Harness::new_ui_state(
-            |ui, app: &mut App| runs_list(app, ui),
-            app,
-        );
-        harness.run();
-
-        // "Команда ещё не запускалась" не должно быть видно рядом с работающим запуском.
-        assert!(
-            harness.query_by_label_contains(RU.runs_empty).is_none(),
-            "плейсхолдер пустой истории показан поверх живого запуска"
-        );
-        // А сам живой запуск в списке есть.
-        assert!(harness.query_by_label_contains(RU.run_running_row).is_some());
-
-        if let Some(run) = harness.state_mut().runs.first_mut() {
-            run.cancel();
-        }
-        std::fs::remove_dir_all(root).ok();
-    }
-}
+#[path = "history_tests.rs"]
+mod tests;
